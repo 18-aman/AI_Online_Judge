@@ -23,36 +23,36 @@ To run this project locally, you will need **Docker Desktop**, **Node.js**, and 
 
 ### 1. Start the Databases (Docker)
 Ensure Docker is running, then spin up the PostgreSQL and Redis containers:
-\\\ash
+`ash
 docker-compose up -d
-\\\
+`
 
 ### 2. Start the Backend API
 Open a terminal, navigate to the backend, configure your virtual environment, and start the FastAPI server:
-\\\ash
+`ash
 cd backend
 python -m venv venv
 # Windows: .\venv\Scripts\activate | Mac/Linux: source venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
-\\\
+`
 
 ### 3. Start the Celery Worker (Code Execution Engine)
 Open a **new** terminal, activate the same virtual environment, and start the worker:
-\\\ash
+`ash
 cd backend
 # Windows: .\venv\Scripts\activate | Mac/Linux: source venv/bin/activate
 celery -A app.worker.celery_app worker --loglevel=info --pool=solo
-\\\
+`
 *(Note: If you are on Mac/Linux, you can omit the --pool=solo flag)*
 
 ### 4. Start the Frontend
 Open a **new** terminal, install the dependencies, and run the React app:
-\\\ash
+`ash
 cd frontend
 npm install
 npm run dev
-\\\
+`
 
 ## 🔒 Environment Variables
-Make sure to copy the \ackend/.env.example\ file to \ackend/.env\ and add your own \GROQ_API_KEY\ to enable the AI Mentor features.
+Make sure to copy the ackend/.env.example file to ackend/.env and add your own GROQ_API_KEY to enable the AI Mentor features.
