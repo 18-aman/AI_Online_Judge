@@ -1,0 +1,419 @@
+import { useEffect, useState } from "react";
+import { useParams, Link } from "react-router-dom";
+import { useAuth } from "../contexts/AuthContext";
+import Editor from "@monaco-editor/react";
+import { generateBoilerplate } from "../utils/boilerplateGenerator";
+import ReactMarkdown from "react-markdown";
+
+interface TestCase {
+  id: string;
+  input_data: string;
+  expected_output: string;
+}
+
+interface ProblemDetail {
+  id: string;
+  title: string;
+  description: string;
+  difficulty: string;
+  time_limit: number;
+  memory_limit: number;
+  test_cases?: TestCase[];
+}
+
+export default function ProblemSolve() {
+  const { id } = useParams();
+  const { token } = useAuth();
+  const [problem, setProblem] = useState<ProblemDetail | null>(null);
+  const [language, setLanguage] = useState("python");
+  const [code, setCode] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionResult, setSubmissionResult] = useState<any>(null);
+  const [mentorHint, setMentorHint] = useState<string | null>(null);
+  const [isAskingMentor, setIsAskingMentor] = useState(false);
+  const [isAskingReview, setIsAskingReview] = useState(false);
+  const [isAskingExplain, setIsAskingExplain] = useState(false);
+  const [isAskingDebug, setIsAskingDebug] = useState(false);
+  const [isAskingComplexity, setIsAskingComplexity] = useState(false);
+  const [consoleHeight, setConsoleHeight] = useState(300);
+
+  const startDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = consoleHeight;
+    
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaY = startY - moveEvent.clientY;
+      const newHeight = Math.max(100, Math.min(startHeight + deltaY, window.innerHeight * 0.8));
+      setConsoleHeight(newHeight);
+    };
+    
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.userSelect = 'auto';
+    };
+    
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  useEffect(() => {
+    fetch(`http://localhost:8000/problems/${id}`, { headers: { "Authorization": `Bearer ${token}` } })
+      .then((res) => res.json())
+      .then((data) => {
+        setProblem(data);
+        setCode(generateBoilerplate(data.signature_schema, language));
+      })
+      .catch((err) => console.error(err));
+  }, [id, language]);
+
+  if (!problem) {
+    return <div className="p-6 text-gray-400">Loading problem...</div>;
+  }
+
+  const handleRun = async () => {
+    setIsSubmitting(true);
+    setSubmissionResult(null);
+    try {
+      const response = await fetch(`http://localhost:8000/problems/${id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ language, code }),
+      });
+      const data = await response.json();
+      setSubmissionResult({
+        status: data.status,
+        results: data.results || []
+      });
+    } catch (err) {
+      console.error(err);
+      alert("Failed to run code. Is the backend running?");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    setSubmissionResult(null);
+    try {
+      // 1. Submit code to get a submission_id
+      const response = await fetch(`http://localhost:8000/problems/${id}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ language, code }),
+      });
+      const data = await response.json();
+      
+      if (!data.submission_id) {
+        throw new Error(data.message || "Failed to get submission ID");
+      }
+
+      const submissionId = data.submission_id;
+
+      // 2. Poll until status is not PENDING or RUNNING
+      const poll = setInterval(async () => {
+        const res = await fetch(`http://localhost:8000/problems/submissions/${submissionId}`, { headers: { "Authorization": `Bearer ${token}` } });
+        const statusData = await res.json();
+        
+        if (statusData.status === "COMPLETED" || statusData.status === "FAILED") {
+          clearInterval(poll);
+          setSubmissionResult({
+            status: statusData.verdict || statusData.status,
+            results: statusData.results || []
+          });
+          setIsSubmitting(false);
+        }
+      }, 1000); // Check every 1 second
+
+    } catch (err) {
+      console.error(err);
+      alert("Failed to submit code. Is the backend running?");
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleAskReview = async () => {
+    setIsAskingReview(true);
+    setMentorHint("Reviewing code...");
+    try {
+      const res = await fetch(`http://localhost:8000/problems/${id}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ code, language })
+      });
+      const data = await res.json();
+      setMentorHint(data.review || "Failed to get review.");
+    } catch (e) {
+      setMentorHint("Error contacting AI.");
+    }
+    setIsAskingReview(false);
+  };
+
+  const handleAskExplain = async () => {
+    setIsAskingExplain(true);
+    setMentorHint("Generating explanation...");
+    try {
+      const res = await fetch(`http://localhost:8000/problems/${id}/explain`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ language, code }),
+      });
+      const data = await res.json();
+      setMentorHint(data.message);
+    } catch (e) {
+      setMentorHint("Error contacting AI.");
+    }
+    setIsAskingExplain(false);
+  };
+
+  const handleAskDebug = async () => {
+    setIsAskingDebug(true);
+    setMentorHint("Debugging code...");
+    try {
+      const res = await fetch(`http://localhost:8000/problems/${id}/debug`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ language, code }),
+      });
+      const data = await res.json();
+      setMentorHint(data.message);
+    } catch (e) {
+      setMentorHint("Error contacting AI.");
+    }
+    setIsAskingDebug(false);
+  };
+
+  const handleAskComplexity = async () => {
+    setIsAskingComplexity(true);
+    setMentorHint("Analyzing complexity...");
+    try {
+      const res = await fetch(`http://localhost:8000/problems/${id}/complexity`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ code, language })
+      });
+      const data = await res.json();
+      setMentorHint(data.analysis || "Failed to analyze complexity.");
+    } catch (e) {
+      setMentorHint("Error contacting AI.");
+    }
+    setIsAskingComplexity(false);
+  };
+
+  const handleAskMentor = async () => {
+    setIsAskingMentor(true);
+    setMentorHint(null);
+    try {
+      const response = await fetch(`http://localhost:8000/problems/${id}/mentor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ language, code }),
+      });
+      const data = await response.json();
+      setMentorHint(data.hint);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to reach AI Mentor.");
+    } finally {
+      setIsAskingMentor(false);
+    }
+  };
+
+  return (
+    <div className="flex h-screen overflow-hidden">
+      {/* Left Pane: Problem Description */}
+      <div className="w-1/2 border-r border-gray-700 bg-gray-900 overflow-y-auto">
+        <div className="p-8">
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-3xl font-bold text-gray-100">{problem.title}</h1>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold uppercase tracking-wider
+              ${problem.difficulty === "EASY" ? "bg-green-900 text-green-300" : ""}
+              ${problem.difficulty === "MEDIUM" ? "bg-yellow-900 text-yellow-300" : ""}
+              ${problem.difficulty === "HARD" ? "bg-red-900 text-red-300" : ""}
+            `}>
+              {problem.difficulty}
+            </span>
+          </div>
+          
+          <div className="flex gap-6 text-sm text-gray-400 mb-8 pb-6 border-b border-gray-800">
+            <div className="flex items-center">
+              <span className="font-semibold text-gray-500 mr-2">Time Limit:</span> {problem.time_limit}s
+            </div>
+            <div className="flex items-center">
+              <span className="font-semibold text-gray-500 mr-2">Memory:</span> {problem.memory_limit}MB
+            </div>
+          </div>
+
+          <div className="prose prose-invert prose-p:leading-relaxed prose-pre:bg-gray-900 prose-pre:border prose-pre:border-gray-700 max-w-none text-gray-300">
+  <ReactMarkdown>
+    {problem.description}
+  </ReactMarkdown>
+</div>
+          
+          {problem.test_cases && problem.test_cases.length > 0 && (
+            <div className="mt-10">
+              <h3 className="text-lg font-bold mb-4 text-gray-200">Examples</h3>
+              <div className="space-y-4">
+                {problem.test_cases.map((tc, idx) => (
+                  <div key={tc.id} className="bg-gray-800 rounded-lg p-4 border border-gray-700 shadow-sm">
+                    <div className="text-sm font-semibold text-gray-400 mb-2">Example {idx + 1}:</div>
+                    <div className="mb-3">
+                      <span className="font-semibold text-gray-500 text-xs uppercase tracking-wider">Input</span>
+                      <pre className="mt-1 bg-gray-900 p-2 rounded text-gray-300 font-mono text-sm whitespace-pre-wrap">
+                        {tc.input_data}
+                      </pre>
+                    </div>
+                    <div>
+                      <span className="font-semibold text-gray-500 text-xs uppercase tracking-wider">Output</span>
+                      <pre className="mt-1 bg-gray-900 p-2 rounded text-gray-300 font-mono text-sm whitespace-pre-wrap">
+                        {tc.expected_output}
+                      </pre>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Right Pane: Code Editor */}
+      <div className="w-1/2 flex flex-col bg-[#1e1e1e]">
+        <div className="flex justify-between items-center p-3 border-b border-gray-800 bg-gray-900">
+          <select 
+            value={language} 
+            onChange={(e) => {
+              const newLang = e.target.value;
+              setLanguage(newLang);
+              if (problem) {
+                setCode(generateBoilerplate(problem.signature_schema, newLang));
+              }
+            }}
+            className="bg-gray-800 text-gray-200 border border-gray-700 rounded px-3 py-1.5 focus:outline-none focus:border-blue-500 text-sm"
+          >
+            <option value="python">Python</option>
+            <option value="cpp">C++</option>
+            <option value="java">Java</option>
+          </select>
+          <div className="space-x-3">
+              <button 
+                onClick={handleAskMentor}
+                disabled={isAskingMentor}
+                className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-4 py-1.5 rounded font-medium text-sm transition-colors shadow-sm"
+              >
+                {isAskingMentor ? "Asking..." : "Ask AI Mentor 🤖"}
+              </button>
+              <button 
+                onClick={handleAskReview}
+                disabled={isAskingReview}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-3 py-1.5 rounded font-medium text-sm transition-colors shadow-sm"
+              >
+                {isAskingReview ? "Reviewing..." : "Code Review"}
+              </button>
+              <button 
+                onClick={handleAskComplexity}
+                disabled={isAskingComplexity}
+                className="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white px-3 py-1.5 rounded font-medium text-sm transition-colors shadow-sm"
+              >
+                {isAskingComplexity ? "Analyzing..." : "Big-O"}
+              </button>
+            <button 
+              onClick={handleRun}
+              disabled={isSubmitting}
+              className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 px-4 py-1.5 rounded font-medium text-sm transition-colors shadow-sm border border-gray-600"
+            >
+              Run Code
+            </button>
+            <button 
+              onClick={handleSubmit}
+              disabled={isSubmitting}
+              className="bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white px-5 py-1.5 rounded font-medium text-sm transition-colors shadow-sm"
+            >
+              {isSubmitting ? "Judging..." : "Submit"}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 relative min-h-0">
+          <Editor
+            height="100%"
+            language={language}
+            theme="vs-dark"
+            value={code}
+            onChange={(val) => setCode(val || "")}
+            options={{
+              minimap: { enabled: false },
+              fontSize: 14,
+              padding: { top: 16 }
+            }}
+          />
+        </div>
+
+        {/* Resizer Divider */}
+        <div 
+          onMouseDown={startDrag}
+          className="h-2 bg-gray-800 hover:bg-purple-500 cursor-row-resize transition-colors flex items-center justify-center border-t border-b border-[#2d2d2d] z-10"
+        >
+          <div className="w-10 h-1 bg-gray-600 rounded-full"></div>
+        </div>
+
+        {/* Console / Output area */}
+        <div style={{ height: `${consoleHeight}px` }} className="bg-gray-900 p-5 overflow-y-auto">
+          {mentorHint && (
+            <div className="mb-4 bg-purple-900/30 border border-purple-800 rounded-lg p-4">
+              <h3 className="text-purple-400 font-bold mb-2 flex items-center">
+                <span className="mr-2">🤖</span> AI Mentor Hint
+              </h3>
+              <div className="prose prose-sm prose-invert max-w-none text-gray-300">
+                <ReactMarkdown>{mentorHint}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          <h3 className="text-sm font-bold text-gray-400 mb-2 uppercase tracking-wider">Console / Result</h3>
+          {isSubmitting ? (
+            <div className="text-blue-400">Evaluating your code against hidden test cases in Docker container...</div>
+          ) : submissionResult ? (
+            <div>
+              <div className={`text-xl font-bold mb-2 ${
+                submissionResult.status === 'Accepted' ? 'text-green-500' : 'text-red-500'
+              }`}>
+                {submissionResult.status}
+              </div>
+              
+              {submissionResult.results?.map((res: any, idx: number) => (
+                <div key={idx} className="mb-2 p-2 bg-gray-800 rounded text-sm">
+                  <span className="font-semibold text-gray-300">Test Case {idx + 1}: </span>
+                  <span className={res.status === 'Accepted' ? 'text-green-400' : 'text-red-400'}>
+                    {res.status}
+                  </span>
+                  {res.status !== 'Accepted' && (
+                    <div className="mt-1 text-gray-400 font-mono text-xs">
+                      <div>Output: {res.output}</div>
+                      {res.expected && <div>Expected: {res.expected}</div>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-gray-600 text-sm italic">Click submit to evaluate your code.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+
+
+
+
+
+
+
+
